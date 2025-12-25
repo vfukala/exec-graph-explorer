@@ -1,0 +1,3 @@
+The purpose of this project is to allow the user to see how execution graphs are constructed during the exploration of multithreaded programs.
+
+When running, the application's state consits a fixed program (determined at the start of the application and then fixed) and of a tree of execution graph which represents how the executions of that graph have been explored so far. The user can view any of the graphs in the execution. The user can also select a leaf node in the graph and choose which of the threads will have an event scheduled next. The user can also select one of the non-leaf nodes and select a thread to have an event scheduled, but that erases the subtree under this non-leaf node because this subtree will have to be reexplored.

@@ -1,5 +1,7 @@
-use crate::app::{format_graph, format_program, AppState};
-use crate::interpreter::NextAction;
+use crate::app::{format_editable_graph, format_graph, format_program, AppState};
+use crate::exec_graph::{EditableExecutionGraph, ExecutionGraph};
+use crate::interpreter::{next_actions, NextAction};
+use crate::model::Program;
 use std::io::{self, Write};
 
 pub trait UserInterface {
@@ -176,90 +178,54 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
 
     match action {
         NextAction::Read { location, order } => {
-            let candidates = app
-                .nodes
-                .get(current)
-                .map(|n| n.graph.writes_for_location(location))
-                .unwrap_or_default();
-            if candidates.is_empty() {
-                println!("no rf candidates for s{}", location);
-                return;
-            }
-            println!("rf candidates for s{}: {:?}", location, candidates);
-            println!("enter rf event ids (comma-separated) or 'none':");
-            let choice = read_line();
-            let selected = parse_usize_list(&choice);
-            if selected.is_empty() {
-                println!("no children generated");
-                return;
-            }
-            let mut children = Vec::new();
-            for rf in selected {
-                if !candidates.contains(&rf) {
-                    println!("skipping invalid rf {}", rf);
-                    continue;
+            let base_graph = match app.nodes.get(current) {
+                Some(node) => node.graph.clone(),
+                None => {
+                    println!("current node is not available");
+                    return;
                 }
-                if let Some(child) =
-                    app.add_child_read_with_rf(current, thread_id, location, rf, order)
-                {
-                    if edit_child_graph(app, child) {
+            };
+            let mut children = Vec::new();
+            loop {
+                let mut editable = EditableExecutionGraph::from_complete(&base_graph);
+                editable.add_read_unset(thread_id, location, order);
+                if let Some(graph) = edit_child_graph(&app.program, editable) {
+                    if let Some(child) = app.add_child_from_graph(current, thread_id, graph) {
                         children.push(child);
                     }
                 }
+                if !ask_to_continue("add another child? (y/n)") {
+                    break;
+                }
             }
-            if children.is_empty() {
-                println!("no children generated");
-            } else {
-                println!("new children: {:?}", children);
-            }
+            print_children_result(&children);
         }
         NextAction::Write {
             location,
             value,
             order,
         } => {
-            let co_list = app
-                .nodes
-                .get(current)
-                .and_then(|n| n.graph.co.get(location).cloned())
-                .unwrap_or_default();
-            let max_index = co_list.len();
-            println!("current co for s{}: {:?}", location, co_list);
-            println!(
-                "choose insertion positions 1..={} (comma-separated) or 'none':",
-                max_index
-            );
-            println!("1 = immediately after init, {} = append at end", max_index);
-            let choice = read_line();
-            let selected = parse_usize_list(&choice);
-            if selected.is_empty() {
-                println!("no children generated");
-                return;
-            }
-            let mut children = Vec::new();
-            for idx in selected {
-                if idx == 0 || idx > max_index {
-                    println!("skipping invalid co index {}", idx);
-                    continue;
+            let base_graph = match app.nodes.get(current) {
+                Some(node) => node.graph.clone(),
+                None => {
+                    println!("current node is not available");
+                    return;
                 }
-                if let Some(child) = app.add_child_write_with_co_index(
-                    current,
-                    thread_id,
-                    location,
-                    value,
-                    order,
-                    idx,
-                ) {
-                    if edit_child_graph(app, child) {
+            };
+            let mut children = Vec::new();
+            loop {
+                let mut editable = EditableExecutionGraph::from_complete(&base_graph);
+                editable.add_write_unset(thread_id, location, value, order);
+                if let Some(graph) = edit_child_graph(&app.program, editable) {
+                    if let Some(child) = app.add_child_from_graph(current, thread_id, graph) {
                         children.push(child);
                     }
                 }
+                if !ask_to_continue("add another child? (y/n)") {
+                    break;
+                }
             }
-            if children.is_empty() {
-                println!("no children generated");
-            } else {
-                println!("new children: {:?}", children);
-            }
+            print_children_result(&children);
         }
         other => {
             println!("thread {}: {}", thread_id, format_action(&other));
@@ -277,19 +243,23 @@ fn read_line() -> String {
     input.trim().to_string()
 }
 
-fn parse_usize_list(input: &str) -> Vec<usize> {
-    if input.trim().eq_ignore_ascii_case("none") {
-        return Vec::new();
-    }
-    input
-        .split(',')
-        .filter_map(|part| part.trim().parse::<usize>().ok())
-        .collect()
+fn ask_to_continue(prompt: &str) -> bool {
+    println!("{}", prompt);
+    read_line().eq_ignore_ascii_case("y")
 }
 
-fn edit_child_graph(app: &mut AppState, node_id: usize) -> bool {
-    println!("editing child node {}", node_id);
+fn print_children_result(children: &[usize]) {
+    if children.is_empty() {
+        println!("no children generated");
+    } else {
+        println!("new children: {:?}", children);
+    }
+}
+
+fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Option<ExecutionGraph> {
+    println!("editing child graph");
     println!("type 'help' for edit commands");
+    println!("{}", format_editable_graph(&graph));
     loop {
         print!("edit> ");
         let _ = io::stdout().flush();
@@ -306,20 +276,27 @@ fn edit_child_graph(app: &mut AppState, node_id: usize) -> bool {
                 println!("  actions                      show next actions");
                 println!("  set-rf <read> <write>         update rf edge");
                 println!("  del <event>                   delete event");
-                println!("  move-co <write> <index>       move write in co (index >= 1)");
+                println!("  set-co <write> <index>        place/move write in co (index >= 1)");
                 println!("  done                          keep child");
                 println!("  discard                       drop child");
             }
             "show" => {
-                if let Some(node) = app.nodes.get(node_id) {
-                    println!("{}", format_graph(&node.graph));
-                }
+                println!("{}", format_editable_graph(&graph));
             }
             "actions" => {
-                if let Some(node) = app.nodes.get(node_id) {
-                    for (tid, action) in node.next_actions.iter().enumerate() {
+                let errors = graph.validate();
+                if !errors.is_empty() {
+                    println!("graph invalid:");
+                    for err in errors {
+                        println!("  {}", err);
+                    }
+                } else if let Some(complete) = graph.clone().into_complete() {
+                    let actions = next_actions(program, &complete);
+                    for (tid, action) in actions.iter().enumerate() {
                         println!("t{}: {}", tid, format_action(action));
                     }
+                } else {
+                    println!("graph invalid: unable to materialize execution graph");
                 }
             }
             "set-rf" => {
@@ -327,13 +304,10 @@ fn edit_child_graph(app: &mut AppState, node_id: usize) -> bool {
                 let rf_id = parts.next().and_then(|v| v.parse::<usize>().ok());
                 match (read_id, rf_id) {
                     (Some(read_id), Some(rf_id)) => {
-                        if let Some(node) = app.nodes.get_mut(node_id) {
-                            if node.graph.set_read_rf(read_id, rf_id) {
-                                app.recompute_node_actions(node_id);
-                                println!("updated rf for e{}", read_id);
-                            } else {
-                                println!("failed to update rf for e{}", read_id);
-                            }
+                        if graph.set_read_rf(read_id, rf_id) {
+                            println!("updated rf for e{}", read_id);
+                        } else {
+                            println!("failed to update rf for e{}", read_id);
                         }
                     }
                     _ => println!("usage: set-rf <read> <write>"),
@@ -342,39 +316,41 @@ fn edit_child_graph(app: &mut AppState, node_id: usize) -> bool {
             "del" => {
                 let event_id = parts.next().and_then(|v| v.parse::<usize>().ok());
                 if let Some(event_id) = event_id {
-                    if let Some(node) = app.nodes.get_mut(node_id) {
-                        if node.graph.remove_event(event_id) {
-                            app.recompute_node_actions(node_id);
-                            println!("deleted e{}", event_id);
-                        } else {
-                            println!("failed to delete e{}", event_id);
-                        }
+                    if graph.remove_event(event_id) {
+                        println!("deleted e{}", event_id);
+                    } else {
+                        println!("failed to delete e{}", event_id);
                     }
                 } else {
                     println!("usage: del <event>");
                 }
             }
-            "move-co" => {
+            "set-co" => {
                 let write_id = parts.next().and_then(|v| v.parse::<usize>().ok());
                 let index = parts.next().and_then(|v| v.parse::<usize>().ok());
                 match (write_id, index) {
                     (Some(write_id), Some(index)) => {
-                        if let Some(node) = app.nodes.get_mut(node_id) {
-                            if node.graph.move_write_co(write_id, index) {
-                                app.recompute_node_actions(node_id);
-                                println!("moved e{} to co index {}", write_id, index);
-                            } else {
-                                println!("failed to move e{}", write_id);
-                            }
+                        if graph.set_write_co(write_id, index) {
+                            println!("set co for e{} to index {}", write_id, index);
+                        } else {
+                            println!("failed to set co for e{}", write_id);
                         }
                     }
-                    _ => println!("usage: move-co <write> <index>"),
+                    _ => println!("usage: set-co <write> <index>"),
                 }
             }
-            "done" => return true,
+            "done" => {
+                let errors = graph.validate();
+                if errors.is_empty() {
+                    return graph.into_complete();
+                }
+                println!("graph invalid:");
+                for err in errors {
+                    println!("  {}", err);
+                }
+            }
             "discard" => {
-                app.remove_node(node_id);
-                return false;
+                return None;
             }
             _ => println!("unknown edit command: {}", cmd),
         }

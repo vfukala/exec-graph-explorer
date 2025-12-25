@@ -1,4 +1,6 @@
-use crate::exec_graph::{EventKind, ExecutionGraph};
+use crate::exec_graph::{
+    EditableEventKind, EditableExecutionGraph, EventKind, ExecutionGraph,
+};
 use crate::interpreter::{next_actions, NextAction};
 use crate::model::{MemoryOrder, Program};
 
@@ -125,6 +127,34 @@ impl AppState {
         let base_graph = node.graph.clone();
         let mut graph = base_graph.clone();
         graph.add_read(thread_id, location, rf, order);
+        let next_actions = next_actions(&self.program, &graph);
+        let child = GraphNode {
+            graph,
+            children: Vec::new(),
+            parent: Some(node_id),
+            scheduled_thread: Some(thread_id),
+            next_actions,
+            alive: true,
+        };
+        let child_id = self.nodes.len();
+        self.nodes.push(child);
+        if let Some(node) = self.nodes.get_mut(node_id) {
+            node.children.push(child_id);
+            node.scheduled_thread = Some(thread_id);
+        }
+        Some(child_id)
+    }
+
+    pub fn add_child_from_graph(
+        &mut self,
+        node_id: usize,
+        thread_id: usize,
+        graph: ExecutionGraph,
+    ) -> Option<usize> {
+        let node = self.nodes.get(node_id)?;
+        if !node.alive {
+            return None;
+        }
         let next_actions = next_actions(&self.program, &graph);
         let child = GraphNode {
             graph,
@@ -299,6 +329,70 @@ pub fn format_graph(graph: &ExecutionGraph) -> String {
                 value,
                 format_order(*order)
             ),
+        };
+        out.push_str(&line);
+    }
+    out.push_str("Per-thread order:\n");
+    for (tid, events) in graph.thread_events.iter().enumerate() {
+        out.push_str(&format!("  t{}: {:?}\n", tid, events));
+    }
+    out.push_str("Coherence:\n");
+    for (loc, events) in graph.co.iter().enumerate() {
+        out.push_str(&format!("  s{}: {:?}\n", loc, events));
+    }
+    out
+}
+
+pub fn format_editable_graph(graph: &EditableExecutionGraph) -> String {
+    let mut out = String::new();
+    out.push_str("Events:\n");
+    for (id, event) in graph.events.iter().enumerate() {
+        if !event.alive {
+            continue;
+        }
+        let line = match &event.kind {
+            EditableEventKind::Init => format!("  e{}: init\n", id),
+            EditableEventKind::Read {
+                location,
+                rf,
+                order,
+            } => {
+                let rf_text = rf.map(|rf| format!("e{}", rf)).unwrap_or_else(|| "?".to_string());
+                format!(
+                    "  e{}: read s{} rf={} ({})\n",
+                    id,
+                    location,
+                    rf_text,
+                    format_order(*order)
+                )
+            }
+            EditableEventKind::Write {
+                location,
+                value,
+                order,
+            } => {
+                let in_co = graph
+                    .co
+                    .get(*location)
+                    .is_some_and(|list| list.contains(&id));
+                if in_co {
+                    format!(
+                        "  e{}: write s{}={} ({})\n",
+                        id,
+                        location,
+                        value,
+                        format_order(*order)
+                    )
+                } else {
+                    format!(
+                        "  e{}: write s{}={} ({}) co=?\n",
+                        id,
+                        location,
+                        value,
+                        format_order(*order)
+                    )
+                }
+            }
         };
         out.push_str(&line);
     }
