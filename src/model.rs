@@ -81,4 +81,9 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
 }

@@ -79,35 +79,39 @@ fn print_help() {
 }
 
 fn print_tree(app: &AppState) {
-    for (id, node) in app.nodes.iter().enumerate() {
-        if !node.alive {
-            continue;
-        }
-        let depth = depth(app, id);
-        let indent = "  ".repeat(depth);
-        let marker = if id == app.current_leaf { "*" } else { " " };
-        let children = app.alive_children(id);
-        let actions = node
-            .next_actions
+    if !app.nodes.get(0).is_some_and(|n| n.alive) {
+        return;
+    }
+    print_tree_node(app, 0, 0);
+}
+
+fn print_tree_node(app: &AppState, id: usize, depth: usize) {
+    let Some(node) = app.nodes.get(id) else {
+        return;
+    };
+    if !node.alive {
+        return;
+    }
+    let indent = "  ".repeat(depth);
+    let marker = if id == app.current_leaf { "*" } else { " " };
+    let children = app.alive_children(id);
+    let actions = if node.data_race {
+        "data-race".to_string()
+    } else {
+        node.next_actions
             .iter()
             .enumerate()
             .map(|(tid, action)| format!("t{}: {}", tid, format_action(action)))
             .collect::<Vec<_>>()
-            .join(", ");
-        println!(
-            "{}{}node {} children={:?} scheduled={:?} actions=[{}]",
-            indent, marker, id, children, node.scheduled_thread, actions
-        );
+            .join(", ")
+    };
+    println!(
+        "{}{}node {} children={:?} scheduled={:?} actions=[{}]",
+        indent, marker, id, children, node.scheduled_thread, actions
+    );
+    for child in children {
+        print_tree_node(app, child, depth + 1);
     }
-}
-
-fn depth(app: &AppState, mut id: usize) -> usize {
-    let mut depth = 0;
-    while let Some(parent) = app.nodes.get(id).and_then(|n| n.parent) {
-        depth += 1;
-        id = parent;
-    }
-    depth
 }
 
 fn is_leaf(app: &AppState, id: usize) -> bool {
@@ -154,6 +158,10 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
         println!("current node is not available");
         return;
     }
+    if app.nodes.get(current).is_some_and(|n| n.data_race) {
+        println!("node {} is a data race terminal", current);
+        return;
+    }
     let existing_children = app.alive_children(current);
     if !existing_children.is_empty() {
         println!("node {} already scheduled. reschedule and prune subtree? (y/n)", current);
@@ -163,9 +171,6 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
             return;
         }
         app.prune_children(current);
-    }
-    if let Some(node) = app.nodes.get(current) {
-        println!("{}", format_graph(&node.graph));
     }
     let Some(action) = app
         .nodes
@@ -185,6 +190,17 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
                     return;
                 }
             };
+            let mut preview = EditableExecutionGraph::from_complete(&base_graph);
+            preview.add_read_unset(thread_id, location, order);
+            println!("{}", format_editable_graph(&preview));
+            if ask_to_continue("declare data race? (y/n)") {
+                if let Some(child) = app.add_data_race_child(current, thread_id) {
+                    print_children_result(&[child]);
+                } else {
+                    println!("no children generated");
+                }
+                return;
+            }
             let mut children = Vec::new();
             loop {
                 let mut editable = EditableExecutionGraph::from_complete(&base_graph);
@@ -199,6 +215,9 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
                 }
             }
             print_children_result(&children);
+            if let Some(&first) = children.first() {
+                app.current_leaf = first;
+            }
         }
         NextAction::Write {
             location,
@@ -212,6 +231,17 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
                     return;
                 }
             };
+            let mut preview = EditableExecutionGraph::from_complete(&base_graph);
+            preview.add_write_unset(thread_id, location, value, order);
+            println!("{}", format_editable_graph(&preview));
+            if ask_to_continue("declare data race? (y/n)") {
+                if let Some(child) = app.add_data_race_child(current, thread_id) {
+                    print_children_result(&[child]);
+                } else {
+                    println!("no children generated");
+                }
+                return;
+            }
             let mut children = Vec::new();
             loop {
                 let mut editable = EditableExecutionGraph::from_complete(&base_graph);
@@ -226,6 +256,9 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
                 }
             }
             print_children_result(&children);
+            if let Some(&first) = children.first() {
+                app.current_leaf = first;
+            }
         }
         other => {
             println!("thread {}: {}", thread_id, format_action(&other));
@@ -272,16 +305,12 @@ fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Opt
         match cmd {
             "help" => {
                 println!("edit commands:");
-                println!("  show                         show graph");
                 println!("  actions                      show next actions");
                 println!("  set-rf <read> <write>         update rf edge");
                 println!("  del <event>                   delete event");
                 println!("  set-co <write> <index>        place/move write in co (index >= 1)");
                 println!("  done                          keep child");
                 println!("  discard                       drop child");
-            }
-            "show" => {
-                println!("{}", format_editable_graph(&graph));
             }
             "actions" => {
                 let errors = graph.validate();
@@ -354,5 +383,6 @@ fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Opt
             }
             _ => println!("unknown edit command: {}", cmd),
         }
+        println!("{}", format_editable_graph(&graph));
     }
 }

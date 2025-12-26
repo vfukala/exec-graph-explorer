@@ -12,6 +12,7 @@ pub struct GraphNode {
     pub scheduled_thread: Option<usize>,
     pub next_actions: Vec<NextAction>,
     pub alive: bool,
+    pub data_race: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -32,6 +33,7 @@ impl AppState {
             scheduled_thread: None,
             next_actions,
             alive: true,
+            data_race: false,
         };
         Self {
             program,
@@ -71,9 +73,10 @@ impl AppState {
                         graph,
                         children: Vec::new(),
                         parent: Some(node_id),
-                        scheduled_thread: Some(thread_id),
+                        scheduled_thread: None,
                         next_actions,
                         alive: true,
+                        data_race: false,
                     };
                     let child_id = self.nodes.len();
                     self.nodes.push(child);
@@ -92,9 +95,10 @@ impl AppState {
                     graph,
                     children: Vec::new(),
                     parent: Some(node_id),
-                    scheduled_thread: Some(thread_id),
+                    scheduled_thread: None,
                     next_actions,
                     alive: true,
+                    data_race: false,
                 };
                 let child_id = self.nodes.len();
                 self.nodes.push(child);
@@ -132,9 +136,10 @@ impl AppState {
             graph,
             children: Vec::new(),
             parent: Some(node_id),
-            scheduled_thread: Some(thread_id),
+            scheduled_thread: None,
             next_actions,
             alive: true,
+            data_race: false,
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -160,9 +165,10 @@ impl AppState {
             graph,
             children: Vec::new(),
             parent: Some(node_id),
-            scheduled_thread: Some(thread_id),
+            scheduled_thread: None,
             next_actions,
             alive: true,
+            data_race: false,
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -194,9 +200,33 @@ impl AppState {
             graph,
             children: Vec::new(),
             parent: Some(node_id),
-            scheduled_thread: Some(thread_id),
+            scheduled_thread: None,
             next_actions,
             alive: true,
+            data_race: false,
+        };
+        let child_id = self.nodes.len();
+        self.nodes.push(child);
+        if let Some(node) = self.nodes.get_mut(node_id) {
+            node.children.push(child_id);
+            node.scheduled_thread = Some(thread_id);
+        }
+        Some(child_id)
+    }
+
+    pub fn add_data_race_child(&mut self, node_id: usize, thread_id: usize) -> Option<usize> {
+        let node = self.nodes.get(node_id)?;
+        if !node.alive {
+            return None;
+        }
+        let child = GraphNode {
+            graph: node.graph.clone(),
+            children: Vec::new(),
+            parent: Some(node_id),
+            scheduled_thread: None,
+            next_actions: Vec::new(),
+            alive: true,
+            data_race: true,
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -459,6 +489,11 @@ fn format_expr(expr: &crate::model::Expr) -> String {
                 BinOp::Sub => "-",
                 BinOp::Mul => "*",
                 BinOp::Div => "/",
+                BinOp::Lt => "<",
+                BinOp::Le => "<=",
+                BinOp::Gt => ">",
+                BinOp::Ge => ">=",
+                BinOp::Eq => "=",
             };
             format!("({} {} {})", format_expr(left), op_str, format_expr(right))
         }

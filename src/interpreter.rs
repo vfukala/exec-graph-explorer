@@ -229,6 +229,11 @@ fn eval_expr(expr: &Expr, locals: &[i64]) -> i64 {
                         l / r
                     }
                 }
+                BinOp::Lt => (l < r) as i64,
+                BinOp::Le => (l <= r) as i64,
+                BinOp::Gt => (l > r) as i64,
+                BinOp::Ge => (l >= r) as i64,
+                BinOp::Eq => (l == r) as i64,
             }
         }
     }
