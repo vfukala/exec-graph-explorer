@@ -13,6 +13,7 @@ pub struct GraphNode {
     pub next_actions: Vec<NextAction>,
     pub alive: bool,
     pub data_race: bool,
+    pub creation_commands: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -34,6 +35,7 @@ impl AppState {
             next_actions,
             alive: true,
             data_race: false,
+            creation_commands: Vec::new(),
         };
         Self {
             program,
@@ -77,6 +79,7 @@ impl AppState {
                         next_actions,
                         alive: true,
                         data_race: false,
+                        creation_commands: Vec::new(),
                     };
                     let child_id = self.nodes.len();
                     self.nodes.push(child);
@@ -99,6 +102,7 @@ impl AppState {
                     next_actions,
                     alive: true,
                     data_race: false,
+                    creation_commands: Vec::new(),
                 };
                 let child_id = self.nodes.len();
                 self.nodes.push(child);
@@ -140,6 +144,7 @@ impl AppState {
             next_actions,
             alive: true,
             data_race: false,
+            creation_commands: Vec::new(),
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -155,6 +160,7 @@ impl AppState {
         node_id: usize,
         thread_id: usize,
         graph: ExecutionGraph,
+        creation_commands: Vec<String>,
     ) -> Option<usize> {
         let node = self.nodes.get(node_id)?;
         if !node.alive {
@@ -169,6 +175,7 @@ impl AppState {
             next_actions,
             alive: true,
             data_race: false,
+            creation_commands,
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -204,6 +211,7 @@ impl AppState {
             next_actions,
             alive: true,
             data_race: false,
+            creation_commands: Vec::new(),
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -227,6 +235,7 @@ impl AppState {
             next_actions: Vec::new(),
             alive: true,
             data_race: true,
+            creation_commands: vec!["data-race".to_string()],
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);

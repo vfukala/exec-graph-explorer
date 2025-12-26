@@ -4,6 +4,11 @@ use crate::interpreter::{next_actions, NextAction};
 use crate::model::Program;
 use std::io::{self, Write};
 
+struct ChildEditResult {
+    graph: ExecutionGraph,
+    commands: Vec<String>,
+}
+
 pub trait UserInterface {
     fn run(&mut self, app: &mut AppState);
 }
@@ -205,8 +210,10 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
             loop {
                 let mut editable = EditableExecutionGraph::from_complete(&base_graph);
                 editable.add_read_unset(thread_id, location, order);
-                if let Some(graph) = edit_child_graph(&app.program, editable) {
-                    if let Some(child) = app.add_child_from_graph(current, thread_id, graph) {
+                if let Some(result) = edit_child_graph(&app.program, editable, app, current) {
+                    if let Some(child) =
+                        app.add_child_from_graph(current, thread_id, result.graph, result.commands)
+                    {
                         children.push(child);
                     }
                 }
@@ -246,8 +253,10 @@ fn schedule_with_user_choices(app: &mut AppState, thread_id: usize) {
             loop {
                 let mut editable = EditableExecutionGraph::from_complete(&base_graph);
                 editable.add_write_unset(thread_id, location, value, order);
-                if let Some(graph) = edit_child_graph(&app.program, editable) {
-                    if let Some(child) = app.add_child_from_graph(current, thread_id, graph) {
+                if let Some(result) = edit_child_graph(&app.program, editable, app, current) {
+                    if let Some(child) =
+                        app.add_child_from_graph(current, thread_id, result.graph, result.commands)
+                    {
                         children.push(child);
                     }
                 }
@@ -289,10 +298,42 @@ fn print_children_result(children: &[usize]) {
     }
 }
 
-fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Option<ExecutionGraph> {
+fn format_child_commands(commands: &[String]) -> String {
+    if commands.is_empty() {
+        "(no edits)".to_string()
+    } else {
+        commands.join("; ")
+    }
+}
+
+fn print_existing_children(app: &AppState, parent_id: usize) {
+    let existing = app.alive_children(parent_id);
+    if existing.is_empty() {
+        return;
+    }
+    println!("existing children (commands):");
+    for child_id in existing {
+        if let Some(child) = app.nodes.get(child_id) {
+            println!("  - {}", format_child_commands(&child.creation_commands));
+        }
+    }
+}
+
+fn print_edit_context(app: &AppState, parent_id: usize, graph: &EditableExecutionGraph) {
+    print_existing_children(app, parent_id);
+    println!("{}", format_editable_graph(graph));
+}
+
+fn edit_child_graph(
+    program: &Program,
+    mut graph: EditableExecutionGraph,
+    app: &AppState,
+    parent_id: usize,
+) -> Option<ChildEditResult> {
     println!("editing child graph");
     println!("type 'help' for edit commands");
-    println!("{}", format_editable_graph(&graph));
+    print_edit_context(app, parent_id, &graph);
+    let mut commands = Vec::new();
     loop {
         print!("edit> ");
         let _ = io::stdout().flush();
@@ -335,6 +376,7 @@ fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Opt
                     (Some(read_id), Some(rf_id)) => {
                         if graph.set_read_rf(read_id, rf_id) {
                             println!("updated rf for e{}", read_id);
+                            commands.push(format!("set-rf {} {}", read_id, rf_id));
                         } else {
                             println!("failed to update rf for e{}", read_id);
                         }
@@ -347,6 +389,7 @@ fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Opt
                 if let Some(event_id) = event_id {
                     if graph.remove_event(event_id) {
                         println!("deleted e{}", event_id);
+                        commands.push(format!("del {}", event_id));
                     } else {
                         println!("failed to delete e{}", event_id);
                     }
@@ -361,6 +404,7 @@ fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Opt
                     (Some(write_id), Some(index)) => {
                         if graph.set_write_co(write_id, index) {
                             println!("set co for e{} to index {}", write_id, index);
+                            commands.push(format!("set-co {} {}", write_id, index));
                         } else {
                             println!("failed to set co for e{}", write_id);
                         }
@@ -371,7 +415,7 @@ fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Opt
             "done" => {
                 let errors = graph.validate();
                 if errors.is_empty() {
-                    return graph.into_complete();
+                    return graph.into_complete().map(|graph| ChildEditResult { graph, commands });
                 }
                 println!("graph invalid:");
                 for err in errors {
@@ -383,6 +427,6 @@ fn edit_child_graph(program: &Program, mut graph: EditableExecutionGraph) -> Opt
             }
             _ => println!("unknown edit command: {}", cmd),
         }
-        println!("{}", format_editable_graph(&graph));
+        print_edit_context(app, parent_id, &graph);
     }
 }
