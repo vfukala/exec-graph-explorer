@@ -14,6 +14,7 @@ pub struct GraphNode {
     pub alive: bool,
     pub data_race: bool,
     pub creation_commands: Vec<String>,
+    pub children_complete: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +37,7 @@ impl AppState {
             alive: true,
             data_race: false,
             creation_commands: Vec::new(),
+            children_complete: false,
         };
         Self {
             program,
@@ -80,6 +82,7 @@ impl AppState {
                         alive: true,
                         data_race: false,
                         creation_commands: Vec::new(),
+                        children_complete: false,
                     };
                     let child_id = self.nodes.len();
                     self.nodes.push(child);
@@ -103,6 +106,7 @@ impl AppState {
                     alive: true,
                     data_race: false,
                     creation_commands: Vec::new(),
+                    children_complete: false,
                 };
                 let child_id = self.nodes.len();
                 self.nodes.push(child);
@@ -145,6 +149,7 @@ impl AppState {
             alive: true,
             data_race: false,
             creation_commands: Vec::new(),
+            children_complete: false,
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -176,6 +181,7 @@ impl AppState {
             alive: true,
             data_race: false,
             creation_commands,
+            children_complete: false,
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -212,6 +218,7 @@ impl AppState {
             alive: true,
             data_race: false,
             creation_commands: Vec::new(),
+            children_complete: false,
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);
@@ -236,6 +243,7 @@ impl AppState {
             alive: true,
             data_race: true,
             creation_commands: vec!["data-race".to_string()],
+            children_complete: false,
         };
         let child_id = self.nodes.len();
         self.nodes.push(child);

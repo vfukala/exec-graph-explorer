@@ -60,6 +60,14 @@ struct GraphColors {
     co: egui::Color32,
 }
 
+struct Obstacle {
+    id: usize,
+    center: egui::Pos2,
+    radius: f32,
+}
+
+const NODE_SIZE: egui::Vec2 = egui::vec2(90.0, 44.0);
+
 impl GuiApp {
     fn new(app: AppState) -> Self {
         let selected_node = app.current_leaf;
@@ -156,14 +164,15 @@ impl eframe::App for GuiApp {
                             let errors = edit.graph.validate();
                             if errors.is_empty() {
                                 if let Some(graph) = edit.graph.clone().into_complete() {
-                                    if let Some(child_id) = self.app.add_child_from_graph(
-                                        edit.parent_id,
-                                        edit.thread_id,
-                                        graph,
-                                        edit.commands.clone(),
-                                    ) {
-                                        pending_selected_node = Some(child_id);
-                                        pending_current_leaf = Some(child_id);
+                                    if self.app
+                                        .add_child_from_graph(
+                                            edit.parent_id,
+                                            edit.thread_id,
+                                            graph,
+                                            edit.commands.clone(),
+                                        )
+                                        .is_some()
+                                    {
                                         pending_selected_action_thread = Some(None);
                                         pending_child_preview = Some(None);
                                     }
@@ -278,12 +287,18 @@ impl eframe::App for GuiApp {
                         pending_selected_action_thread = Some(None);
                         pending_child_preview = Some(None);
                         pending_data_race = Some((*node_id, false));
+                        if let Some(node) = self.app.nodes.get_mut(*node_id) {
+                            node.children_complete = false;
+                        }
                     }
                     ConfirmDialog::DeclareDataRace { node_id } => {
                         self.app.prune_children(*node_id);
                         pending_selected_action_thread = Some(None);
                         pending_child_preview = Some(None);
                         pending_data_race = Some((*node_id, true));
+                        if let Some(node) = self.app.nodes.get_mut(*node_id) {
+                            node.children_complete = false;
+                        }
                     }
                 }
                 pending_confirm_dialog = Some(None);
@@ -341,10 +356,15 @@ fn draw_tree(
             ui.add_space(depth as f32 * 12.0);
         }
         let label = format!("node {}", id);
+        let text = if node.children_complete {
+            egui::RichText::new(label).color(egui::Color32::from_gray(120))
+        } else {
+            egui::RichText::new(label)
+        };
         if ui
             .add_enabled(
                 !editing,
-                egui::SelectableLabel::new(state.selected_node == id, label),
+                egui::SelectableLabel::new(state.selected_node == id, text),
             )
             .clicked()
         {
@@ -359,7 +379,7 @@ fn draw_tree(
 }
 
 fn show_actions(ui: &mut egui::Ui, app: &mut AppState, state: &mut UiState) {
-    let (actions, scheduled_thread, has_children, data_race_exists) = {
+    let (actions, scheduled_thread, has_children, data_race_exists, children_complete) = {
         let Some(node) = app.nodes.get(state.selected_node) else {
             ui.label("no node selected");
             return;
@@ -372,6 +392,7 @@ fn show_actions(ui: &mut egui::Ui, app: &mut AppState, state: &mut UiState) {
             node.scheduled_thread,
             has_children,
             data_race_exists,
+            node.children_complete,
         )
     };
 
@@ -389,6 +410,7 @@ fn show_actions(ui: &mut egui::Ui, app: &mut AppState, state: &mut UiState) {
                     state.selected_child_preview = None;
                     if let Some(node) = app.nodes.get_mut(state.selected_node) {
                         node.data_race = false;
+                        node.children_complete = false;
                     }
                 }
             }
@@ -413,6 +435,7 @@ fn show_actions(ui: &mut egui::Ui, app: &mut AppState, state: &mut UiState) {
     if let Some(tid) = schedule_thread {
         if let Some(node) = app.nodes.get_mut(state.selected_node) {
             node.scheduled_thread = Some(tid);
+            node.children_complete = false;
         }
         state.selected_action_thread = Some(tid);
     }
@@ -422,7 +445,8 @@ fn show_actions(ui: &mut egui::Ui, app: &mut AppState, state: &mut UiState) {
     let editable = selected_thread
         .and_then(|tid| actions.get(tid))
         .is_some_and(|action| matches!(action, NextAction::Read { .. } | NextAction::Write { .. }));
-    let add_child_allowed = editable && selected_thread.is_some() && !data_race_exists;
+    let add_child_allowed =
+        editable && selected_thread.is_some() && !data_race_exists && !children_complete;
     if ui
         .add_enabled(add_child_allowed, egui::Button::new("Add child"))
         .clicked()
@@ -431,6 +455,15 @@ fn show_actions(ui: &mut egui::Ui, app: &mut AppState, state: &mut UiState) {
     }
 
     if scheduled_thread.is_some() {
+        let mut complete = children_complete;
+        if ui
+            .checkbox(&mut complete, "All children added")
+            .clicked()
+        {
+            if let Some(node) = app.nodes.get_mut(state.selected_node) {
+                node.children_complete = complete;
+            }
+        }
         let mut checked = data_race_exists;
         let checkbox = ui.checkbox(&mut checked, "Declare data race");
         if checkbox.clicked() {
@@ -606,11 +639,12 @@ fn draw_execution_graph(
     egui::ScrollArea::both().show(ui, |ui| {
         let (rect, _response) = ui.allocate_exact_size(size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
+        let obstacles = build_obstacles(rect, &positions, NODE_SIZE.length() * 0.5, 4.0);
         draw_lane_labels(&painter, rect, graph.thread_events.len());
         draw_po_edges(&painter, rect, &positions, &graph.thread_events, &colors.po);
         draw_init_po_edges(&painter, rect, &positions, &graph.thread_events, &colors.po);
-        draw_rf_edges(&painter, rect, &positions, graph, &colors.rf);
-        draw_co_edges(&painter, rect, &positions, &graph.co, &colors.co);
+        draw_rf_edges(&painter, rect, &positions, graph, &obstacles, &colors.rf);
+        draw_co_edges(&painter, rect, &positions, &graph.co, &obstacles, &colors.co);
         draw_nodes_execution(
             ui,
             &painter,
@@ -636,11 +670,12 @@ fn draw_editable_graph(
     egui::ScrollArea::both().show(ui, |ui| {
         let (rect, _response) = ui.allocate_exact_size(size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
+        let obstacles = build_obstacles(rect, &positions, NODE_SIZE.length() * 0.5, 4.0);
         draw_lane_labels(&painter, rect, graph.thread_events.len());
         draw_po_edges(&painter, rect, &positions, &graph.thread_events, &colors.po);
         draw_init_po_edges(&painter, rect, &positions, &graph.thread_events, &colors.po);
-        draw_rf_edges_editable(&painter, rect, &positions, graph, &colors.rf);
-        draw_co_edges(&painter, rect, &positions, &graph.co, &colors.co);
+        draw_rf_edges_editable(&painter, rect, &positions, graph, &obstacles, &colors.rf);
+        draw_co_edges(&painter, rect, &positions, &graph.co, &obstacles, &colors.co);
         clicked = draw_nodes_editable(
             ui,
             &painter,
@@ -658,8 +693,8 @@ fn compute_layout(
     thread_events: &[Vec<usize>],
     alive: impl Fn(usize) -> bool,
 ) -> (HashMap<usize, egui::Pos2>, egui::Vec2) {
-    let lane_height = 80.0;
-    let node_spacing = 90.0;
+    let lane_height = 110.0;
+    let node_spacing = 130.0;
     let margin = 40.0;
     let max_events = thread_events.iter().map(|t| t.len()).max().unwrap_or(0);
     let width = margin * 2.0 + node_spacing * (max_events as f32 + 1.0);
@@ -762,6 +797,7 @@ fn draw_rf_edges(
     rect: egui::Rect,
     positions: &HashMap<usize, egui::Pos2>,
     graph: &ExecutionGraph,
+    obstacles: &[Obstacle],
     color: &egui::Color32,
 ) {
     for (id, event) in graph.events.iter().enumerate() {
@@ -770,10 +806,13 @@ fn draw_rf_edges(
         }
         if let EventKind::Read { rf, .. } = event.kind {
             if let (Some(start), Some(end)) = (positions.get(&rf), positions.get(&id)) {
-                draw_arrow(
+                draw_routed_arrow(
                     painter,
                     to_abs(rect, *start),
                     to_abs(rect, *end),
+                    obstacles,
+                    rf,
+                    id,
                     egui::Stroke::new(2.0, *color),
                     10.0,
                     7.0,
@@ -789,6 +828,7 @@ fn draw_rf_edges_editable(
     rect: egui::Rect,
     positions: &HashMap<usize, egui::Pos2>,
     graph: &EditableExecutionGraph,
+    obstacles: &[Obstacle],
     color: &egui::Color32,
 ) {
     for (id, event) in graph.events.iter().enumerate() {
@@ -797,10 +837,13 @@ fn draw_rf_edges_editable(
         }
         if let EditableEventKind::Read { rf: Some(rf), .. } = event.kind {
             if let (Some(start), Some(end)) = (positions.get(&rf), positions.get(&id)) {
-                draw_arrow(
+                draw_routed_arrow(
                     painter,
                     to_abs(rect, *start),
                     to_abs(rect, *end),
+                    obstacles,
+                    rf,
+                    id,
                     egui::Stroke::new(2.0, *color),
                     10.0,
                     7.0,
@@ -816,16 +859,20 @@ fn draw_co_edges(
     rect: egui::Rect,
     positions: &HashMap<usize, egui::Pos2>,
     co: &[Vec<usize>],
+    obstacles: &[Obstacle],
     color: &egui::Color32,
 ) {
     for events in co {
         for window in events.windows(2) {
             if let [a, b] = window {
                 if let (Some(start), Some(end)) = (positions.get(a), positions.get(b)) {
-                    draw_arrow(
+                    draw_routed_arrow(
                         painter,
                         to_abs(rect, *start),
                         to_abs(rect, *end),
+                        obstacles,
+                        *a,
+                        *b,
                         egui::Stroke::new(2.0, *color),
                         10.0,
                         7.0,
@@ -855,8 +902,8 @@ fn draw_nodes_execution(
         };
         let (label, fill) = match &event.kind {
             EventKind::Init => ("init".to_string(), egui::Color32::from_rgb(120, 140, 180)),
-            EventKind::Read { location, rf, order } => (
-                format!("e{}: r s{} rf=e{} ({})", id, location, rf, format_order(*order)),
+            EventKind::Read { location, order, .. } => (
+                format!("R(s{}) ({})", location, format_order(*order)),
                 egui::Color32::from_rgb(120, 190, 120),
             ),
             EventKind::Write {
@@ -864,35 +911,40 @@ fn draw_nodes_execution(
                 value,
                 order,
             } => (
-                format!("e{}: w s{}={} ({})", id, location, value, format_order(*order)),
+                format!("W(s{}, {}) ({})", location, value, format_order(*order)),
                 egui::Color32::from_rgb(190, 150, 120),
             ),
         };
         let center = to_abs(rect, *pos);
-        let radius = 12.0;
-        painter.circle_filled(center, radius, fill);
+        let node_rect = egui::Rect::from_center_size(center, NODE_SIZE);
+        painter.rect_filled(node_rect, 6.0, fill);
         if selected_event == Some(id) {
-            painter.circle_stroke(
-                center,
-                radius + 3.0,
+            painter.rect_stroke(
+                node_rect.expand(3.0),
+                6.0,
                 egui::Stroke::new(2.0, egui::Color32::YELLOW),
             );
         }
-        let node_rect = egui::Rect::from_center_size(center, egui::vec2(28.0, 28.0));
         let response = ui.interact(
             node_rect,
             ui.make_persistent_id((id_prefix, id)),
             egui::Sense::click(),
         );
-        if response.hovered() {
-            painter.text(
-                center + egui::vec2(16.0, -10.0),
-                egui::Align2::LEFT_TOP,
-                label,
-                egui::FontId::monospace(12.0),
-                egui::Color32::WHITE,
-            );
-        }
+        painter.text(
+            egui::pos2(node_rect.center().x, node_rect.top() + 4.0),
+            egui::Align2::CENTER_TOP,
+            format!("{}", id),
+            egui::FontId::monospace(10.0),
+            egui::Color32::BLACK,
+        );
+        painter.text(
+            node_rect.center() + egui::vec2(0.0, 6.0),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::monospace(11.0),
+            egui::Color32::BLACK,
+        );
+        let _ = response;
     }
 }
 
@@ -917,18 +969,8 @@ fn draw_nodes_editable(
             EditableEventKind::Init => {
                 ("init".to_string(), egui::Color32::from_rgb(120, 140, 180))
             }
-            EditableEventKind::Read {
-                location,
-                rf,
-                order,
-            } => (
-                format!(
-                    "e{}: r s{} rf={} ({})",
-                    id,
-                    location,
-                    rf.map(|id| format!("e{}", id)).unwrap_or_else(|| "?".to_string()),
-                    format_order(*order)
-                ),
+            EditableEventKind::Read { location, order, .. } => (
+                format!("R(s{}) ({})", location, format_order(*order)),
                 egui::Color32::from_rgb(120, 190, 120),
             ),
             EditableEventKind::Write {
@@ -936,21 +978,20 @@ fn draw_nodes_editable(
                 value,
                 order,
             } => (
-                format!("e{}: w s{}={} ({})", id, location, value, format_order(*order)),
+                format!("W(s{}, {}) ({})", location, value, format_order(*order)),
                 egui::Color32::from_rgb(190, 150, 120),
             ),
         };
         let center = to_abs(rect, *pos);
-        let radius = 12.0;
-        painter.circle_filled(center, radius, fill);
+        let node_rect = egui::Rect::from_center_size(center, NODE_SIZE);
+        painter.rect_filled(node_rect, 6.0, fill);
         if selected_event == Some(id) {
-            painter.circle_stroke(
-                center,
-                radius + 3.0,
+            painter.rect_stroke(
+                node_rect.expand(3.0),
+                6.0,
                 egui::Stroke::new(2.0, egui::Color32::YELLOW),
             );
         }
-        let node_rect = egui::Rect::from_center_size(center, egui::vec2(28.0, 28.0));
         let response = ui.interact(
             node_rect,
             ui.make_persistent_id((id_prefix, id)),
@@ -959,15 +1000,20 @@ fn draw_nodes_editable(
         if response.clicked() {
             clicked = Some(id);
         }
-        if response.hovered() {
-            painter.text(
-                center + egui::vec2(16.0, -10.0),
-                egui::Align2::LEFT_TOP,
-                label,
-                egui::FontId::monospace(12.0),
-                egui::Color32::WHITE,
-            );
-        }
+        painter.text(
+            egui::pos2(node_rect.center().x, node_rect.top() + 4.0),
+            egui::Align2::CENTER_TOP,
+            format!("{}", id),
+            egui::FontId::monospace(10.0),
+            egui::Color32::BLACK,
+        );
+        painter.text(
+            node_rect.center() + egui::vec2(0.0, 6.0),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::monospace(11.0),
+            egui::Color32::BLACK,
+        );
     }
     clicked
 }
@@ -998,6 +1044,22 @@ fn to_abs(rect: egui::Rect, pos: egui::Pos2) -> egui::Pos2 {
     egui::pos2(rect.min.x + pos.x, rect.min.y + pos.y)
 }
 
+fn build_obstacles(
+    rect: egui::Rect,
+    positions: &HashMap<usize, egui::Pos2>,
+    radius: f32,
+    padding: f32,
+) -> Vec<Obstacle> {
+    positions
+        .iter()
+        .map(|(id, pos)| Obstacle {
+            id: *id,
+            center: to_abs(rect, *pos),
+            radius: radius + padding,
+        })
+        .collect()
+}
+
 fn draw_arrow(
     painter: &egui::Painter,
     start: egui::Pos2,
@@ -1020,6 +1082,189 @@ fn draw_arrow(
     let right = head_base - ortho;
 
     painter.line_segment([start, head_base], stroke);
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, left, right],
+        stroke.color,
+        egui::Stroke::NONE,
+    ));
+}
+
+fn draw_routed_arrow(
+    painter: &egui::Painter,
+    start: egui::Pos2,
+    end: egui::Pos2,
+    obstacles: &[Obstacle],
+    start_id: usize,
+    end_id: usize,
+    stroke: egui::Stroke,
+    head_len: f32,
+    head_width: f32,
+    end_padding: f32,
+) {
+    if is_segment_clear(start, end, obstacles, start_id, end_id) {
+        draw_arrow(painter, start, end, stroke, head_len, head_width, end_padding);
+        return;
+    }
+
+    let dir = end - start;
+    let len = dir.length();
+    if len < 1.0 {
+        return;
+    }
+    let dir_norm = dir / len;
+    let perp = egui::vec2(-dir_norm.y, dir_norm.x);
+    let mid = start + dir * 0.5;
+    let offsets = [30.0, 60.0, 90.0, 120.0];
+    let mut best_control = None;
+    let mut best_score = usize::MAX;
+
+    for offset in offsets {
+        for sign in [-1.0, 1.0] {
+            let control = mid + perp * (offset * sign);
+            let score = curve_intersections(start, control, end, obstacles, start_id, end_id);
+            if score == 0 {
+                best_control = Some(control);
+                best_score = 0;
+                break;
+            }
+            if score < best_score {
+                best_score = score;
+                best_control = Some(control);
+            }
+        }
+        if best_score == 0 {
+            break;
+        }
+    }
+
+    if let Some(control) = best_control {
+        draw_quadratic_arrow(
+            painter,
+            start,
+            control,
+            end,
+            stroke,
+            head_len,
+            head_width,
+            end_padding,
+        );
+    } else {
+        draw_arrow(painter, start, end, stroke, head_len, head_width, end_padding);
+    }
+}
+
+fn is_segment_clear(
+    start: egui::Pos2,
+    end: egui::Pos2,
+    obstacles: &[Obstacle],
+    start_id: usize,
+    end_id: usize,
+) -> bool {
+    for obs in obstacles {
+        if obs.id == start_id || obs.id == end_id {
+            continue;
+        }
+        if segment_intersects_circle(start, end, obs.center, obs.radius) {
+            return false;
+        }
+    }
+    true
+}
+
+fn segment_intersects_circle(
+    start: egui::Pos2,
+    end: egui::Pos2,
+    center: egui::Pos2,
+    radius: f32,
+) -> bool {
+    let seg = end - start;
+    let len2 = seg.length_sq();
+    if len2 <= f32::EPSILON {
+        return (center - start).length() <= radius;
+    }
+    let t = ((center - start).dot(seg) / len2).clamp(0.0, 1.0);
+    let proj = start + seg * t;
+    (center - proj).length() <= radius
+}
+
+fn curve_intersections(
+    start: egui::Pos2,
+    control: egui::Pos2,
+    end: egui::Pos2,
+    obstacles: &[Obstacle],
+    start_id: usize,
+    end_id: usize,
+) -> usize {
+    let samples = 16;
+    let mut count = 0;
+    let mut prev = start;
+    for i in 1..=samples {
+        let t = i as f32 / samples as f32;
+        let point = quadratic_point(start, control, end, t);
+        for obs in obstacles {
+            if obs.id == start_id || obs.id == end_id {
+                continue;
+            }
+            if segment_intersects_circle(prev, point, obs.center, obs.radius) {
+                count += 1;
+                break;
+            }
+        }
+        prev = point;
+    }
+    count
+}
+
+fn quadratic_point(
+    start: egui::Pos2,
+    control: egui::Pos2,
+    end: egui::Pos2,
+    t: f32,
+) -> egui::Pos2 {
+    let one = 1.0 - t;
+    let s = start.to_vec2() * (one * one);
+    let c = control.to_vec2() * (2.0 * one * t);
+    let e = end.to_vec2() * (t * t);
+    egui::Pos2::new(s.x + c.x + e.x, s.y + c.y + e.y)
+}
+
+fn draw_quadratic_arrow(
+    painter: &egui::Painter,
+    start: egui::Pos2,
+    control: egui::Pos2,
+    end: egui::Pos2,
+    stroke: egui::Stroke,
+    head_len: f32,
+    head_width: f32,
+    end_padding: f32,
+) {
+    let tangent = end - control;
+    let tangent_len = tangent.length();
+    if tangent_len < 1.0 {
+        draw_arrow(painter, start, end, stroke, head_len, head_width, end_padding);
+        return;
+    }
+    let dir = tangent / tangent_len;
+    let tip = end - dir * end_padding;
+    let head_base = tip - dir * head_len;
+    let mut points = Vec::new();
+    let samples = 20;
+    for i in 0..=samples {
+        let t = i as f32 / samples as f32;
+        let mut point = quadratic_point(start, control, end, t);
+        if i == samples {
+            point = head_base;
+        }
+        points.push(point);
+    }
+    for window in points.windows(2) {
+        if let [a, b] = window {
+            painter.line_segment([*a, *b], stroke);
+        }
+    }
+    let ortho = egui::vec2(-dir.y, dir.x) * (head_width * 0.5);
+    let left = head_base + ortho;
+    let right = head_base - ortho;
     painter.add(egui::Shape::convex_polygon(
         vec![tip, left, right],
         stroke.color,
